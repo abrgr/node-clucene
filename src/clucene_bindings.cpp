@@ -203,11 +203,13 @@ public:
         s_ct->SetClassName(String::NewSymbol("Lucene"));
 
         NODE_SET_PROTOTYPE_METHOD(s_ct, "addDocument", AddDocumentAsync);
+        NODE_SET_PROTOTYPE_METHOD(s_ct, "addDocuments", AddDocumentsAsync);
         NODE_SET_PROTOTYPE_METHOD(s_ct, "deleteDocument", DeleteDocumentAsync);
         NODE_SET_PROTOTYPE_METHOD(s_ct, "deleteDocumentsByType", DeleteDocumentsByTypeAsync);
         NODE_SET_PROTOTYPE_METHOD(s_ct, "search", SearchAsync);
         NODE_SET_PROTOTYPE_METHOD(s_ct, "optimize", OptimizeAsync);
         NODE_SET_PROTOTYPE_METHOD(s_ct, "closeWriter", CloseWriter);
+        NODE_SET_PROTOTYPE_METHOD(s_ct, "getDocumentCount", GetDocumentCountAsync);
 
         target->Set(String::NewSymbol("Lucene"), s_ct->GetFunction());
     }
@@ -224,11 +226,12 @@ public:
         return scope.Close(args.This());
     }
     
+    typedef std::vector<std::pair<std::string, LuceneDocument*> > DocsAndIds;
+
     struct index_baton_t {
         Lucene* lucene;         
-        LuceneDocument* doc;
-        std::string docID;
         std::string index;
+        DocsAndIds docsAndIds;
         Persistent<Function> callback;
         uint64_t indexTime;
         int32_t docCount;
@@ -269,34 +272,73 @@ public:
 
         REQ_OBJ_TYPE(args.This(), Lucene);
         Lucene* lucene = ObjectWrap::Unwrap<Lucene>(args.This());
-
         
         index_baton_t* baton = new index_baton_t;
         baton->lucene = lucene;
-        baton->docID.assign(*v8::String::Utf8Value(args[0]));
-        baton->doc = ObjectWrap::Unwrap<LuceneDocument>(args[1]->ToObject());
-        baton->index.assign(*v8::String::Utf8Value(args[2]));
+        std::string docId = *v8::String::Utf8Value(args[0]);
+        LuceneDocument* doc = ObjectWrap::Unwrap<LuceneDocument>(args[1]->ToObject());
+        baton->docsAndIds.push_back(std::pair<std::string, LuceneDocument*>(docId, doc));
+        baton->index = *v8::String::Utf8Value(args[2]);
         baton->callback = Persistent<Function>::New(callback);
         baton->error.clear();
         
         lucene->Ref();
-        baton->doc->Ref();
-
+        doc->Ref();
 
         eio_custom(EIO_Index, EIO_PRI_DEFAULT, EIO_AfterIndex, baton);
-
 
         ev_ref(EV_DEFAULT_UC);
 
         return scope.Close(Undefined());
     }
         
+    // args:
+    //   Object* {String* docId: Document* doc}
+    //   String* indexPath
+    static Handle<Value> AddDocumentsAsync(const Arguments& args) {
+        HandleScope scope;
+
+        REQ_OBJ_ARG(0);
+        REQ_STR_ARG(1);
+        REQ_FUN_ARG(2, callback);
+
+        REQ_OBJ_TYPE(args.This(), Lucene);
+        Lucene* lucene = ObjectWrap::Unwrap<Lucene>(args.This());
+
+        v8::Local<v8::Object> docsById = args[0]->ToObject();
+
+        index_baton_t* baton = new index_baton_t;
+        baton->lucene = lucene;
+        baton->index = *v8::String::Utf8Value(args[1]);
+        baton->callback = Persistent<Function>::New(callback);
+        baton->error.clear();
+
+        v8::Local<v8::Array> docIds = docsById->GetOwnPropertyNames();
+        for (uint32_t i = 0; i<docIds->Length(); ++i ) {
+            v8::Local<v8::String> v8DocId = docIds->Get(i)->ToString();
+            std::string docId = *v8::String::Utf8Value(v8DocId);
+            v8::Local<v8::Value> v8Doc = docsById->Get(v8DocId);
+            if ( !v8Doc->IsObject() ) {
+                return scope.Close(ThrowException(Exception::TypeError(String::New("Expected an object with Lucene Documents as keys"))));
+            }
+
+            LuceneDocument* doc = ObjectWrap::Unwrap<LuceneDocument>(v8Doc->ToObject());
+            doc->Ref();
+            baton->docsAndIds.push_back(std::pair<std::string, LuceneDocument*>(docId, doc));
+        }
+
+        lucene->Ref();
+
+        eio_custom(EIO_Index, EIO_PRI_DEFAULT, EIO_AfterIndex, baton);
+
+        ev_ref(EV_DEFAULT_UC);
+
+        return scope.Close(Undefined());
+    }
     
     static void EIO_Index(eio_req* req) {
 
-        index_baton_t* baton = static_cast<index_baton_t*>(req->data);
-
-        
+      index_baton_t* baton = static_cast<index_baton_t*>(req->data);
 
       try {
           bool needsCreation = true;
@@ -322,22 +364,25 @@ public:
           }
             
           uint64_t start = Misc::currentTimeMillis();
-
-          // replace document._id if it's also set in the document itself
           TCHAR key[CL_MAX_DIR];
           STRCPY_AtoT(key, "_id", CL_MAX_DIR);
-          TCHAR* value = STRDUP_AtoT(baton->docID.c_str());
-          baton->doc->document()->removeFields(key);
-          Field* field = _CLNEW Field(key, value, Field::STORE_YES|Field::INDEX_UNTOKENIZED);
-          baton->doc->document()->add(*field);
-          
-          Term* term = new Term(key, value);
-          //_tprintf(_T("Fields: %S\n"), baton->doc->document()->toString());
-          //_tprintf(_T("Term k(%S) v(%S)\n"), key, value);   
-          baton->lucene->writer_->updateDocument(term, baton->doc->document());
-          _CLDECDELETE(term);
+          for ( DocsAndIds::const_iterator iter = baton->docsAndIds.begin(); iter != baton->docsAndIds.end(); ++iter ) {
+              std::string docId = iter->first;
+              LuceneDocument* doc = iter->second;
 
-          delete value;
+              // replace document._id if it's also set in the document itself
+              TCHAR* value = STRDUP_AtoT(docId.c_str());
+              doc->document()->removeFields(key);
+              Field* field = _CLNEW Field(key, value, Field::STORE_YES|Field::INDEX_UNTOKENIZED);
+              doc->document()->add(*field);
+              Term* term = new Term(key, value);
+              //_tprintf(_T("Fields: %S\n"), baton->doc->document()->toString());
+              //_tprintf(_T("Term k(%S) v(%S)\n"), key, value);   
+              baton->lucene->writer_->updateDocument(term, doc->document());
+              _CLDECDELETE(term);
+
+              delete value;
+          }
           
           // Make the index use as little files as possible, and optimize it
           
@@ -371,7 +416,10 @@ public:
         index_baton_t* baton = static_cast<index_baton_t*>(req->data);
         ev_unref(EV_DEFAULT_UC);
         baton->lucene->Unref();
-        baton->doc->Unref();
+
+        for ( DocsAndIds::const_iterator iter = baton->docsAndIds.begin(); iter != baton->docsAndIds.end(); ++iter ) {
+            iter->second->Unref();
+        }
 
         Handle<Value> argv[2];
 
@@ -697,6 +745,8 @@ public:
         } catch(...) {
           baton->error = "Got an unknown exception";
         }
+
+        baton->lucene->close_reader(baton->index);
         
         return;
     }
@@ -837,6 +887,105 @@ public:
         }
 
         baton->callback.Dispose();
+        delete baton;
+
+        return 0;
+    }
+
+    struct get_doc_count_baton_t
+    {
+        Lucene* lucene;
+        std::string index;
+        uint32_t docCount;
+        uint64_t docCountTime;
+        Persistent<Function> callback;
+        std::string error;
+    };
+
+    // args:
+    //   String* indexPath
+    //   Function* callback
+    static Handle<Value> GetDocumentCountAsync(const Arguments& args) {
+        HandleScope scope;
+
+        REQ_STR_ARG(0);
+        REQ_FUN_ARG(1, callback);
+
+        REQ_OBJ_TYPE(args.This(), Lucene);
+        Lucene* lucene = ObjectWrap::Unwrap<Lucene>(args.This());
+
+        get_doc_count_baton_t* baton = new get_doc_count_baton_t;
+        baton->lucene = lucene;
+        baton->index = *v8::String::Utf8Value(args[0]);
+        baton->callback = Persistent<Function>::New(callback);
+        baton->error.clear();
+
+        lucene->Ref();
+
+        eio_custom(EIO_GetDocumentCount, EIO_PRI_DEFAULT, EIO_AfterGetDocumentCount, baton);
+        ev_ref(EV_DEFAULT_UC);
+
+        return scope.Close(Undefined());
+    }
+
+    static void EIO_GetDocumentCount(eio_req* req)
+    {
+        get_doc_count_baton_t* baton = static_cast<get_doc_count_baton_t*>(req->data);
+        uint64_t start = Misc::currentTimeMillis();
+        
+        if (!IndexReader::indexExists(baton->index.c_str())) {
+            baton->error.empty();
+            baton->docCount = 0;
+            return;
+        }
+
+        IndexReader* reader = baton->lucene->get_reader(baton->index, baton->error);
+        
+        if (!baton->error.empty()) {
+            return;
+        }
+        
+        try {
+            baton->docCount = reader->numDocs();
+            baton->docCountTime = (Misc::currentTimeMillis() - start);
+            baton->lucene->close_reader(baton->index);
+        } catch (CLuceneError& E) {
+          baton->error.assign(E.what());
+        } catch(...) {
+          baton->error = "Got an unknown exception";
+        }
+        
+        return;
+    }
+
+    static int EIO_AfterGetDocumentCount(eio_req* req)
+    {
+        HandleScope scope;
+        get_doc_count_baton_t* baton = static_cast<get_doc_count_baton_t*>(req->data);
+        ev_unref(EV_DEFAULT_UC);
+        baton->lucene->Unref();
+
+        Handle<Value> argv[3];
+
+        if (baton->error.empty()) {
+            argv[0] = Null(); // Error arg, defaulting to no error
+            argv[1] = v8::Integer::NewFromUnsigned(baton->docCount);
+            argv[2] = v8::Integer::NewFromUnsigned((uint32_t)baton->docCountTime);
+        } else {
+            argv[0] = String::New(baton->error.c_str());
+            argv[1] = Null();
+            argv[2] = Null();
+        }
+
+        TryCatch tryCatch;
+
+        baton->callback->Call(Context::GetCurrent()->Global(), 3, argv);
+
+        if (tryCatch.HasCaught()) {
+            FatalException(tryCatch);
+        }
+        
+        baton->callback.Dispose();  
         delete baton;
 
         return 0;
