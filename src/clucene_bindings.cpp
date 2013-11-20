@@ -283,20 +283,17 @@ public:
         baton->doc->Ref();
 
 
-        eio_custom(EIO_Index, EIO_PRI_DEFAULT, EIO_AfterIndex, baton);
+        uv_work_t *req = new uv_work_t;
+        req->data = baton;
 
-
-        ev_ref(EV_DEFAULT_UC);
+        uv_queue_work(uv_default_loop(), req, Index, AfterIndex);
 
         return scope.Close(Undefined());
     }
         
     
-    static void EIO_Index(eio_req* req) {
-
+    static void Index(uv_work_t* req) {
         index_baton_t* baton = static_cast<index_baton_t*>(req->data);
-
-        
 
       try {
           bool needsCreation = true;
@@ -366,10 +363,10 @@ public:
         return;
     }
 
-    static int EIO_AfterIndex(eio_req* req) {
+    static void AfterIndex(uv_work_t* req, int status)
+    {
         HandleScope scope;
         index_baton_t* baton = static_cast<index_baton_t*>(req->data);
-        ev_unref(EV_DEFAULT_UC);
         baton->lucene->Unref();
         baton->doc->Unref();
 
@@ -394,7 +391,7 @@ public:
 
         baton->callback.Dispose();
         delete baton;
-        return 0;
+        delete req;
     }
     
     
@@ -430,14 +427,16 @@ public:
         
         lucene->Ref();
 
-        eio_custom(EIO_DeleteDocument, EIO_PRI_DEFAULT, EIO_AfterDeleteDocument, baton);
-        ev_ref(EV_DEFAULT_UC);
+        uv_work_t *req = new uv_work_t;
+        req->data = baton;
+
+        uv_queue_work(uv_default_loop(), req, DeleteDocument, AfterDeleteDocument);
 
         return scope.Close(Undefined());
     }
         
     
-    static void EIO_DeleteDocument(eio_req* req) {
+    static void DeleteDocument(uv_work_t* req) {
         indexdelete_baton_t* baton = static_cast<indexdelete_baton_t*>(req->data);
 
         lucene::analysis::standard::StandardAnalyzer an;
@@ -469,10 +468,10 @@ public:
         return;
     }
 
-    static int EIO_AfterDeleteDocument(eio_req* req) {
+    static void AfterDeleteDocument(uv_work_t* req, int status)
+    {
         HandleScope scope;
         indexdelete_baton_t* baton = static_cast<indexdelete_baton_t*>(req->data);
-        ev_unref(EV_DEFAULT_UC);
         baton->lucene->Unref();
 
         Handle<Value> argv[2];
@@ -496,7 +495,7 @@ public:
 
         baton->callback.Dispose();
         delete baton;
-        return 0;
+        delete req;
     }
     
     struct indexdeletebytype_baton_t {
@@ -529,14 +528,16 @@ public:
         baton->error.clear();
         lucene->Ref();
 
-        eio_custom(EIO_DeleteDocumentsByType, EIO_PRI_DEFAULT, EIO_AfterDeleteDocumentsByType, baton);
-        ev_ref(EV_DEFAULT_UC);
+        uv_work_t *req = new uv_work_t;
+        req->data = baton;
+
+        uv_queue_work(uv_default_loop(), req, DeleteDocumentsByType, AfterDeleteDocumentsByType);
 
         return scope.Close(Undefined());
     }
         
     
-    static void EIO_DeleteDocumentsByType(eio_req* req) {
+    static void DeleteDocumentsByType(uv_work_t* req) {
         indexdeletebytype_baton_t* baton = static_cast<indexdeletebytype_baton_t*>(req->data);
 
         lucene::analysis::standard::StandardAnalyzer an;
@@ -566,10 +567,10 @@ public:
         return;
     }
 
-    static int EIO_AfterDeleteDocumentsByType(eio_req* req) {
+    static void AfterDeleteDocumentsByType(uv_work_t* req, int status)
+    {
         HandleScope scope;
         indexdeletebytype_baton_t* baton = static_cast<indexdeletebytype_baton_t*>(req->data);
-        ev_unref(EV_DEFAULT_UC);
         baton->lucene->Unref();
 
         Handle<Value> argv[2];
@@ -593,7 +594,7 @@ public:
 
         baton->callback.Dispose();
         delete baton;
-        return 0;
+        delete req;
     }
     
 
@@ -641,13 +642,15 @@ public:
 
         lucene->Ref();
 
-        eio_custom(EIO_Search, EIO_PRI_DEFAULT, EIO_AfterSearch, baton);
-        ev_ref(EV_DEFAULT_UC);
+        uv_work_t *req = new uv_work_t;
+        req->data = baton;
+
+        uv_queue_work(uv_default_loop(), req, Search, AfterSearch);
 
         return scope.Close(Undefined());
     }
 
-    static void EIO_Search(eio_req* req)
+    static void Search(uv_work_t* req)
     {
         search_baton_t* baton = static_cast<search_baton_t*>(req->data);
         uint64_t start = Misc::currentTimeMillis();
@@ -701,11 +704,10 @@ public:
         return;
     }
 
-    static int EIO_AfterSearch(eio_req* req)
+    static void AfterSearch(uv_work_t* req, int status)
     {
         HandleScope scope;
         search_baton_t* baton = static_cast<search_baton_t*>(req->data);
-        ev_unref(EV_DEFAULT_UC);
         baton->lucene->Unref();
 
         Handle<Value> argv[3];
@@ -743,8 +745,8 @@ public:
         
         baton->callback.Dispose();  
         delete baton;
+        delete req;
 
-        return 0;
     }
 
     struct optimize_baton_t
@@ -773,13 +775,15 @@ public:
 
         lucene->Ref();
 
-        eio_custom(EIO_Optimize, EIO_PRI_DEFAULT, EIO_AfterOptimize, baton);
-        ev_ref(EV_DEFAULT_UC);
+        uv_work_t *req = new uv_work_t;
+        req->data = baton;
+
+        uv_queue_work(uv_default_loop(), req, Optimize, AfterOptimize);
 
         return scope.Close(Undefined());
     }
 
-    static void EIO_Optimize(eio_req* req)
+    static void Optimize(uv_work_t* req)
     {
         optimize_baton_t* baton = static_cast<optimize_baton_t*>(req->data);
 
@@ -810,13 +814,12 @@ public:
         return;
     }
 
-    static int EIO_AfterOptimize(eio_req* req)
+    static void AfterOptimize(uv_work_t* req, int status)
     {
         HandleScope scope;
 
         optimize_baton_t* baton = static_cast<optimize_baton_t*>(req->data);
         
-        ev_unref(EV_DEFAULT_UC);
         baton->lucene->Unref();
 
         Handle<Value> argv[1];
@@ -838,8 +841,7 @@ public:
 
         baton->callback.Dispose();
         delete baton;
-
-        return 0;
+        delete req;
     }
 };
 
