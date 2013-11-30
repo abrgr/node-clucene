@@ -852,4 +852,4 @@ extern "C" void init(Handle<Object> target) {
     LuceneDocument::Initialize(target);
 }
 
-NODE_MODULE(clucene_bindings, init);
+NODE_MODULE(clucene, init)
